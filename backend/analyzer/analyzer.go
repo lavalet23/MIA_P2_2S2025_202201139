@@ -48,8 +48,12 @@ func Analyzer(input string) (string, error) {
 		return commands.ParseUnmount(tokens)
 	case "mkgrp":
 		return commands.ParseMkgrp(tokens[1:])
+	case "rmgrp":
+		return commands.ParseRmgrp(tokens[1:])
 	case "cat":
 		return commands.ParseCat(tokens[1:])
+	case "mkusr":
+		return commands.ParseMkusr(tokens[1:])
 	default:
 		return "", fmt.Errorf("comando desconocido: %s", tokens[0])
 	}

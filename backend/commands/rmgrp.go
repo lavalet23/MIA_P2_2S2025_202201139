@@ -10,23 +10,23 @@ import (
 	"time"
 )
 
-// MKGRP estructura que representa el comando mkgrp con sus parámetros
-type MKGRP struct {
-	name string // Nombre del grupo a crear
+// RMGRP estructura que representa el comando rmgrp con sus parámetros
+type RMGRP struct {
+	name string // Nombre del grupo a eliminar
 }
 
 /*
 	Ejemplos de uso:
-	mkgrp -name=usuarios
-	mkgrp -name=adm
+	rmgrp -name=mail
 
 	Solo puede ser ejecutado por el usuario root
-	El nombre del grupo no debe existir previamente
+	El grupo debe existir y no estar ya eliminado
+	Elimina lógicamente (cambia el ID a 0)
 */
 
-// ParseMkgrp analiza los tokens del comando mkgrp
-func ParseMkgrp(tokens []string) (string, error) {
-	cmd := &MKGRP{}
+// ParseRmgrp analiza los tokens del comando rmgrp
+func ParseRmgrp(tokens []string) (string, error) {
+	cmd := &RMGRP{}
 
 	// Procesar cada token
 	for _, token := range tokens {
@@ -40,61 +40,55 @@ func ParseMkgrp(tokens []string) (string, error) {
 				value = strings.Trim(value, "\"")
 			}
 			cmd.name = value
-		} else if token != "" && token != "mkgrp" {
-			return "", fmt.Errorf("MKGRP ERROR: parámetro no reconocido '%s'", token)
+		} else if token != "" && token != "rmgrp" {
+			return "", fmt.Errorf("RMGRP ERROR: parámetro no reconocido '%s'", token)
 		}
 	}
 
 	// Validar parámetro obligatorio
 	if cmd.name == "" {
-		return "", errors.New("MKGRP ERROR: el parámetro -name es obligatorio")
-	}
-
-	// Validar longitud máxima (10 caracteres según el enunciado)
-	if len(cmd.name) > 10 {
-		return "", errors.New("MKGRP ERROR: el nombre del grupo no puede exceder 10 caracteres")
+		return "", errors.New("RMGRP ERROR: el parámetro -name es obligatorio")
 	}
 
 	// Ejecutar el comando
-	err := commandMkgrp(cmd)
+	err := commandRmgrp(cmd)
 	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("MKGRP: Grupo '%s' creado exitosamente", cmd.name), nil
+	return fmt.Sprintf("RMGRP: Grupo '%s' eliminado exitosamente", cmd.name), nil
 }
 
-// commandMkgrp ejecuta la lógica del comando mkgrp
-func commandMkgrp(cmd *MKGRP) error {
+// commandRmgrp ejecuta la lógica del comando rmgrp
+func commandRmgrp(cmd *RMGRP) error {
 	// 1. Verificar que hay una sesión activa
 	if !stores.Auth.IsAuthenticated() {
-		return errors.New("MKGRP ERROR: No hay una sesión activa. Use el comando LOGIN primero")
+		return errors.New("RMGRP ERROR: No hay una sesión activa. Use el comando LOGIN primero")
 	}
 
 	// 2. Verificar que el usuario actual es root
 	currentUser, _, _ := stores.Auth.GetCurrentUser()
 	if currentUser != "root" {
-		return errors.New("MKGRP ERROR: Solo el usuario root puede crear grupos")
+		return errors.New("RMGRP ERROR: Solo el usuario root puede eliminar grupos")
 	}
 
 	// 3. Obtener la partición montada y el superbloque
 	partitionID := stores.Auth.GetPartitionID()
 	sb, partition, diskPath, err := stores.GetMountedPartitionSuperblock(partitionID)
 	if err != nil {
-		return fmt.Errorf("MKGRP ERROR: error al obtener la partición montada: %w", err)
+		return fmt.Errorf("RMGRP ERROR: error al obtener la partición montada: %w", err)
 	}
 
 	// 4. Leer el contenido actual de users.txt
-	usersContent, err := readUsersFileMkgrp(sb, diskPath)
+	usersContent, err := readUsersFileRmgrp(sb, diskPath)
 	if err != nil {
-		return fmt.Errorf("MKGRP ERROR: error al leer users.txt: %w", err)
+		return fmt.Errorf("RMGRP ERROR: error al leer users.txt: %w", err)
 	}
 
-	// 5. Parsear las líneas existentes
+	// 5. Parsear las líneas existentes y marcar el grupo como eliminado
 	lines := strings.Split(usersContent, "\n")
 	var validLines []string
-	nextGID := int32(1)
-	groupExists := false
+	groupFound := false
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -102,7 +96,6 @@ func commandMkgrp(cmd *MKGRP) error {
 			continue
 		}
 
-		validLines = append(validLines, line)
 		parts := strings.Split(line, ",")
 
 		if len(parts) >= 3 {
@@ -111,47 +104,43 @@ func commandMkgrp(cmd *MKGRP) error {
 				parts[i] = strings.TrimSpace(parts[i])
 			}
 
-			var id int32
-			fmt.Sscanf(parts[0], "%d", &id)
+			// Si es el grupo a eliminar y no está ya eliminado
+			if parts[1] == "G" && parts[2] == cmd.name {
+				if parts[0] == "0" {
+					return fmt.Errorf("RMGRP ERROR: el grupo '%s' ya está eliminado", cmd.name)
+				}
 
-			// Actualizar el siguiente GID disponible
-			if id >= nextGID {
-				nextGID = id + 1
-			}
-
-			// Verificar si el grupo ya existe y no está eliminado
-			if parts[1] == "G" && parts[0] != "0" && parts[2] == cmd.name {
-				groupExists = true
+				// Marcar como eliminado cambiando el ID a 0
+				parts[0] = "0"
+				groupFound = true
 			}
 		}
+
+		// Reconstruir la línea
+		validLines = append(validLines, strings.Join(parts, ","))
 	}
 
-	// 6. Validar que el grupo no existe
-	if groupExists {
-		return fmt.Errorf("MKGRP ERROR: el grupo '%s' ya existe", cmd.name)
+	// 6. Validar que el grupo existe
+	if !groupFound {
+		return fmt.Errorf("RMGRP ERROR: el grupo '%s' no existe", cmd.name)
 	}
 
-	// 7. Crear la nueva línea de grupo
-	// Formato: GID, Tipo, Grupo
-	newGroupLine := fmt.Sprintf("%d,G,%s", nextGID, cmd.name)
-	validLines = append(validLines, newGroupLine)
-
-	// 8. Reconstruir el contenido completo
+	// 7. Reconstruir el contenido completo
 	newContent := strings.Join(validLines, "\n") + "\n"
 
-	fmt.Printf("DEBUG MKGRP -> Nuevo contenido de users.txt:\n%s\n", newContent)
+	fmt.Printf("DEBUG RMGRP -> Nuevo contenido de users.txt:\n%s\n", newContent)
 
-	// 9. Escribir el nuevo contenido en users.txt
-	err = writeUsersFileMkgrp(sb, partition, diskPath, newContent)
+	// 8. Escribir el nuevo contenido en users.txt
+	err = writeUsersFileRmgrp(sb, partition, diskPath, newContent)
 	if err != nil {
-		return fmt.Errorf("MKGRP ERROR: error al escribir users.txt: %w", err)
+		return fmt.Errorf("RMGRP ERROR: error al escribir users.txt: %w", err)
 	}
 
 	return nil
 }
 
-// readUsersFileMkgrp lee el contenido completo del archivo users.txt (inodo 1)
-func readUsersFileMkgrp(sb *structures.SuperBlock, path string) (string, error) {
+// readUsersFileRmgrp lee el contenido completo del archivo users.txt (inodo 1)
+func readUsersFileRmgrp(sb *structures.SuperBlock, path string) (string, error) {
 	// Deserializar el inodo 1 (users.txt)
 	inode := &structures.Inode{}
 	inodeOffset := int64(sb.S_inode_start + (1 * sb.S_inode_size))
@@ -190,8 +179,8 @@ func readUsersFileMkgrp(sb *structures.SuperBlock, path string) (string, error) 
 	return content.String(), nil
 }
 
-// writeUsersFileMkgrp escribe el contenido actualizado en users.txt
-func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partition, path string, content string) error {
+// writeUsersFileRmgrp escribe el contenido actualizado en users.txt
+func writeUsersFileRmgrp(sb *structures.SuperBlock, partition *structures.Partition, path string, content string) error {
 	// Deserializar el inodo 1 (users.txt)
 	inode := &structures.Inode{}
 	inodeOffset := int64(sb.S_inode_start + (1 * sb.S_inode_size))
@@ -209,19 +198,16 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 	inode.I_size = int32(len(content))
 
 	// Actualizar timestamps
-	inode.I_mtime = float32(time.Now().Unix()) // Última modificación
-	inode.I_atime = float32(time.Now().Unix()) // Último acceso
+	inode.I_mtime = float32(time.Now().Unix())
+	inode.I_atime = float32(time.Now().Unix())
 
-	// Calcular cuántos bloques necesitamos (cada bloque tiene 64 bytes)
+	// Calcular cuántos bloques necesitamos
 	contentBytes := []byte(content)
-	blocksNeeded := (len(contentBytes) + 63) / 64 // Redondear hacia arriba
+	blocksNeeded := (len(contentBytes) + 63) / 64
 
 	if blocksNeeded > 12 {
 		return errors.New("el contenido de users.txt excede la capacidad de 12 bloques directos")
 	}
-
-	fmt.Printf("DEBUG writeUsersFileMkgrp -> Bloques necesarios: %d\n", blocksNeeded)
-	fmt.Printf("DEBUG writeUsersFileMkgrp -> Contenido length: %d bytes\n", len(contentBytes))
 
 	// Abrir el archivo para escritura
 	file, err := os.OpenFile(path, os.O_RDWR, 0644)
@@ -234,38 +220,30 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 	for i := 0; i < blocksNeeded; i++ {
 		blockIndex := inode.I_block[i]
 
-		// Si el bloque no existe, necesitamos asignar uno nuevo
 		if blockIndex == -1 {
-			// Buscar el siguiente bloque libre en el bitmap
-			blockIndex, err = findFreeBlockMkgrp(sb, file)
+			blockIndex, err = findFreeBlockRmgrp(sb, file)
 			if err != nil {
 				return fmt.Errorf("error al buscar bloque libre: %w", err)
 			}
 
-			// Asignar el bloque al inodo
 			inode.I_block[i] = blockIndex
 
-			// Marcar el bloque como usado en el bitmap
-			err = updateBitmapBlockMkgrp(sb, file, blockIndex, true)
+			err = updateBitmapBlockRmgrp(sb, file, blockIndex, true)
 			if err != nil {
 				return fmt.Errorf("error al actualizar bitmap: %w", err)
 			}
 
-			// Actualizar contador de bloques libres
 			sb.S_free_blocks_count--
 		}
 
-		// Preparar el bloque
 		block := &structures.FileBlock{}
 
-		// Calcular el rango de bytes para este bloque
 		startByte := i * 64
 		endByte := startByte + 64
 		if endByte > len(contentBytes) {
 			endByte = len(contentBytes)
 		}
 
-		// Copiar el contenido al bloque (rellenar con zeros el resto)
 		for j := 0; j < 64; j++ {
 			if startByte+j < len(contentBytes) {
 				block.B_content[j] = contentBytes[startByte+j]
@@ -274,36 +252,10 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 			}
 		}
 
-		// Escribir el bloque en el disco
 		blockOffset := int64(sb.S_block_start + (blockIndex * sb.S_block_size))
-		fmt.Printf("DEBUG writeUsersFileMkgrp -> Escribiendo bloque %d en offset %d\n", blockIndex, blockOffset)
-
 		err := block.Serialize(path, blockOffset)
 		if err != nil {
 			return fmt.Errorf("error al escribir bloque %d: %w", blockIndex, err)
-		}
-	}
-
-	// Limpiar bloques no utilizados (si el archivo se hizo más pequeño)
-	for i := blocksNeeded; i < 12; i++ {
-		if inode.I_block[i] != -1 {
-			// Marcar el bloque como libre
-			err = updateBitmapBlockMkgrp(sb, file, inode.I_block[i], false)
-			if err != nil {
-				return fmt.Errorf("error al liberar bloque: %w", err)
-			}
-
-			// Limpiar el bloque
-			block := &structures.FileBlock{}
-			blockOffset := int64(sb.S_block_start + (inode.I_block[i] * sb.S_block_size))
-			err := block.Serialize(path, blockOffset)
-			if err != nil {
-				return fmt.Errorf("error al limpiar bloque %d: %w", i, err)
-			}
-
-			// Remover referencia del inodo
-			inode.I_block[i] = -1
-			sb.S_free_blocks_count++
 		}
 	}
 
@@ -320,13 +272,11 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 		return fmt.Errorf("error al actualizar superbloque: %w", err)
 	}
 
-	fmt.Println("DEBUG writeUsersFileMkgrp -> Escritura completada exitosamente")
 	return nil
 }
 
-// findFreeBlockMkgrp busca el primer bloque libre en el bitmap
-func findFreeBlockMkgrp(sb *structures.SuperBlock, file *os.File) (int32, error) {
-	// Leer el bitmap de bloques
+// findFreeBlockRmgrp busca el primer bloque libre en el bitmap
+func findFreeBlockRmgrp(sb *structures.SuperBlock, file *os.File) (int32, error) {
 	bitmapSize := sb.S_blocks_count
 	bitmap := make([]byte, bitmapSize)
 
@@ -340,7 +290,6 @@ func findFreeBlockMkgrp(sb *structures.SuperBlock, file *os.File) (int32, error)
 		return -1, err
 	}
 
-	// Buscar el primer bit libre (0)
 	for i := int32(0); i < bitmapSize; i++ {
 		if bitmap[i] == 0 {
 			return i, nil
@@ -350,16 +299,14 @@ func findFreeBlockMkgrp(sb *structures.SuperBlock, file *os.File) (int32, error)
 	return -1, errors.New("no hay bloques libres disponibles")
 }
 
-// updateBitmapBlockMkgrp actualiza el bitmap de bloques
-func updateBitmapBlockMkgrp(sb *structures.SuperBlock, file *os.File, blockIndex int32, used bool) error {
-	// Posicionarse en el bitmap de bloques
+// updateBitmapBlockRmgrp actualiza el bitmap de bloques
+func updateBitmapBlockRmgrp(sb *structures.SuperBlock, file *os.File, blockIndex int32, used bool) error {
 	bitmapOffset := int64(sb.S_bm_block_start + blockIndex)
 	_, err := file.Seek(bitmapOffset, 0)
 	if err != nil {
 		return err
 	}
 
-	// Escribir el bit
 	var bit byte
 	if used {
 		bit = 1
@@ -368,9 +315,5 @@ func updateBitmapBlockMkgrp(sb *structures.SuperBlock, file *os.File, blockIndex
 	}
 
 	_, err = file.Write([]byte{bit})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }

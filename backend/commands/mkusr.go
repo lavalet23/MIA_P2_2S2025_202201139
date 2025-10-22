@@ -10,91 +10,121 @@ import (
 	"time"
 )
 
-// MKGRP estructura que representa el comando mkgrp con sus parámetros
-type MKGRP struct {
-	name string // Nombre del grupo a crear
+// MKUSR estructura que representa el comando mkusr con sus parámetros
+type MKUSR struct {
+	user string // Nombre del usuario a crear
+	pass string // Contraseña del usuario
+	grp  string // Grupo al que pertenece el usuario
 }
 
 /*
 	Ejemplos de uso:
-	mkgrp -name=usuarios
-	mkgrp -name=adm
+	mkusr -user="usuario1" -pass=password -grp=root
+	mkusr -user="user1" -pass=abc -grp=usuarios
 
 	Solo puede ser ejecutado por el usuario root
-	El nombre del grupo no debe existir previamente
+	El grupo debe existir y no estar eliminado
+	El usuario no debe existir previamente
 */
 
-// ParseMkgrp analiza los tokens del comando mkgrp
-func ParseMkgrp(tokens []string) (string, error) {
-	cmd := &MKGRP{}
+// ParseMkusr analiza los tokens del comando mkusr
+func ParseMkusr(tokens []string) (string, error) {
+	cmd := &MKUSR{}
 
 	// Procesar cada token
 	for _, token := range tokens {
 		token = strings.TrimSpace(token)
 		lowerToken := strings.ToLower(token)
 
-		if strings.HasPrefix(lowerToken, "-name=") {
-			value := token[len("-name="):]
+		if strings.HasPrefix(lowerToken, "-user=") {
+			value := token[len("-user="):]
 			// Quitar comillas si existen
 			if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
 				value = strings.Trim(value, "\"")
 			}
-			cmd.name = value
-		} else if token != "" && token != "mkgrp" {
-			return "", fmt.Errorf("MKGRP ERROR: parámetro no reconocido '%s'", token)
+			cmd.user = value
+		} else if strings.HasPrefix(lowerToken, "-pass=") {
+			value := token[len("-pass="):]
+			// Quitar comillas si existen
+			if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+				value = strings.Trim(value, "\"")
+			}
+			cmd.pass = value
+		} else if strings.HasPrefix(lowerToken, "-grp=") {
+			value := token[len("-grp="):]
+			// Quitar comillas si existen
+			if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+				value = strings.Trim(value, "\"")
+			}
+			cmd.grp = value
+		} else if token != "" && token != "mkusr" {
+			return "", fmt.Errorf("MKUSR ERROR: parámetro no reconocido '%s'", token)
 		}
 	}
 
-	// Validar parámetro obligatorio
-	if cmd.name == "" {
-		return "", errors.New("MKGRP ERROR: el parámetro -name es obligatorio")
+	// Validar parámetros obligatorios
+	if cmd.user == "" {
+		return "", errors.New("MKUSR ERROR: el parámetro -user es obligatorio")
+	}
+	if cmd.pass == "" {
+		return "", errors.New("MKUSR ERROR: el parámetro -pass es obligatorio")
+	}
+	if cmd.grp == "" {
+		return "", errors.New("MKUSR ERROR: el parámetro -grp es obligatorio")
 	}
 
 	// Validar longitud máxima (10 caracteres según el enunciado)
-	if len(cmd.name) > 10 {
-		return "", errors.New("MKGRP ERROR: el nombre del grupo no puede exceder 10 caracteres")
+	if len(cmd.user) > 10 {
+		return "", errors.New("MKUSR ERROR: el nombre de usuario no puede exceder 10 caracteres")
+	}
+	if len(cmd.pass) > 10 {
+		return "", errors.New("MKUSR ERROR: la contraseña no puede exceder 10 caracteres")
+	}
+	if len(cmd.grp) > 10 {
+		return "", errors.New("MKUSR ERROR: el nombre del grupo no puede exceder 10 caracteres")
 	}
 
 	// Ejecutar el comando
-	err := commandMkgrp(cmd)
+	err := commandMkusr(cmd)
 	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("MKGRP: Grupo '%s' creado exitosamente", cmd.name), nil
+	return fmt.Sprintf("MKUSR: Usuario '%s' creado exitosamente en el grupo '%s'", cmd.user, cmd.grp), nil
 }
 
-// commandMkgrp ejecuta la lógica del comando mkgrp
-func commandMkgrp(cmd *MKGRP) error {
+// commandMkusr ejecuta la lógica del comando mkusr
+func commandMkusr(cmd *MKUSR) error {
 	// 1. Verificar que hay una sesión activa
 	if !stores.Auth.IsAuthenticated() {
-		return errors.New("MKGRP ERROR: No hay una sesión activa. Use el comando LOGIN primero")
+		return errors.New("MKUSR ERROR: No hay una sesión activa. Use el comando LOGIN primero")
 	}
 
 	// 2. Verificar que el usuario actual es root
 	currentUser, _, _ := stores.Auth.GetCurrentUser()
 	if currentUser != "root" {
-		return errors.New("MKGRP ERROR: Solo el usuario root puede crear grupos")
+		return errors.New("MKUSR ERROR: Solo el usuario root puede crear usuarios")
 	}
 
 	// 3. Obtener la partición montada y el superbloque
 	partitionID := stores.Auth.GetPartitionID()
 	sb, partition, diskPath, err := stores.GetMountedPartitionSuperblock(partitionID)
 	if err != nil {
-		return fmt.Errorf("MKGRP ERROR: error al obtener la partición montada: %w", err)
+		return fmt.Errorf("MKUSR ERROR: error al obtener la partición montada: %w", err)
 	}
 
 	// 4. Leer el contenido actual de users.txt
-	usersContent, err := readUsersFileMkgrp(sb, diskPath)
+	usersContent, err := readUsersFileMkusr(sb, diskPath)
 	if err != nil {
-		return fmt.Errorf("MKGRP ERROR: error al leer users.txt: %w", err)
+		return fmt.Errorf("MKUSR ERROR: error al leer users.txt: %w", err)
 	}
 
 	// 5. Parsear las líneas existentes
 	lines := strings.Split(usersContent, "\n")
 	var validLines []string
-	nextGID := int32(1)
+	nextUID := int32(1)
 	groupExists := false
+	userExists := false
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -114,44 +144,56 @@ func commandMkgrp(cmd *MKGRP) error {
 			var id int32
 			fmt.Sscanf(parts[0], "%d", &id)
 
-			// Actualizar el siguiente GID disponible
-			if id >= nextGID {
-				nextGID = id + 1
+			// Actualizar el siguiente UID disponible
+			if id >= nextUID {
+				nextUID = id + 1
 			}
 
-			// Verificar si el grupo ya existe y no está eliminado
-			if parts[1] == "G" && parts[0] != "0" && parts[2] == cmd.name {
+			// Verificar si el grupo existe y no está eliminado
+			if parts[1] == "G" && parts[0] != "0" && parts[2] == cmd.grp {
 				groupExists = true
+			}
+
+			// Verificar si el usuario ya existe (incluso si está eliminado)
+			if len(parts) >= 4 && parts[1] == "U" && parts[3] == cmd.user {
+				if parts[0] != "0" {
+					userExists = true
+				}
 			}
 		}
 	}
 
-	// 6. Validar que el grupo no existe
-	if groupExists {
-		return fmt.Errorf("MKGRP ERROR: el grupo '%s' ya existe", cmd.name)
+	// 6. Validar que el grupo existe
+	if !groupExists {
+		return fmt.Errorf("MKUSR ERROR: el grupo '%s' no existe o está eliminado", cmd.grp)
 	}
 
-	// 7. Crear la nueva línea de grupo
-	// Formato: GID, Tipo, Grupo
-	newGroupLine := fmt.Sprintf("%d,G,%s", nextGID, cmd.name)
-	validLines = append(validLines, newGroupLine)
+	// 7. Validar que el usuario no existe
+	if userExists {
+		return fmt.Errorf("MKUSR ERROR: el usuario '%s' ya existe", cmd.user)
+	}
 
-	// 8. Reconstruir el contenido completo
+	// 8. Crear la nueva línea de usuario
+	// Formato: UID, Tipo, Grupo, Usuario, Contraseña
+	newUserLine := fmt.Sprintf("%d,U,%s,%s,%s", nextUID, cmd.grp, cmd.user, cmd.pass)
+	validLines = append(validLines, newUserLine)
+
+	// 9. Reconstruir el contenido completo
 	newContent := strings.Join(validLines, "\n") + "\n"
 
-	fmt.Printf("DEBUG MKGRP -> Nuevo contenido de users.txt:\n%s\n", newContent)
+	fmt.Printf("DEBUG MKUSR -> Nuevo contenido de users.txt:\n%s\n", newContent)
 
-	// 9. Escribir el nuevo contenido en users.txt
-	err = writeUsersFileMkgrp(sb, partition, diskPath, newContent)
+	// 10. Escribir el nuevo contenido en users.txt
+	err = writeUsersFileMkusr(sb, partition, diskPath, newContent)
 	if err != nil {
-		return fmt.Errorf("MKGRP ERROR: error al escribir users.txt: %w", err)
+		return fmt.Errorf("MKUSR ERROR: error al escribir users.txt: %w", err)
 	}
 
 	return nil
 }
 
-// readUsersFileMkgrp lee el contenido completo del archivo users.txt (inodo 1)
-func readUsersFileMkgrp(sb *structures.SuperBlock, path string) (string, error) {
+// readUsersFileMkusr lee el contenido completo del archivo users.txt (inodo 1)
+func readUsersFileMkusr(sb *structures.SuperBlock, path string) (string, error) {
 	// Deserializar el inodo 1 (users.txt)
 	inode := &structures.Inode{}
 	inodeOffset := int64(sb.S_inode_start + (1 * sb.S_inode_size))
@@ -190,8 +232,8 @@ func readUsersFileMkgrp(sb *structures.SuperBlock, path string) (string, error) 
 	return content.String(), nil
 }
 
-// writeUsersFileMkgrp escribe el contenido actualizado en users.txt
-func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partition, path string, content string) error {
+// writeUsersFileMkusr escribe el contenido actualizado en users.txt
+func writeUsersFileMkusr(sb *structures.SuperBlock, partition *structures.Partition, path string, content string) error {
 	// Deserializar el inodo 1 (users.txt)
 	inode := &structures.Inode{}
 	inodeOffset := int64(sb.S_inode_start + (1 * sb.S_inode_size))
@@ -220,8 +262,8 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 		return errors.New("el contenido de users.txt excede la capacidad de 12 bloques directos")
 	}
 
-	fmt.Printf("DEBUG writeUsersFileMkgrp -> Bloques necesarios: %d\n", blocksNeeded)
-	fmt.Printf("DEBUG writeUsersFileMkgrp -> Contenido length: %d bytes\n", len(contentBytes))
+	fmt.Printf("DEBUG writeUsersFileMkusr -> Bloques necesarios: %d\n", blocksNeeded)
+	fmt.Printf("DEBUG writeUsersFileMkusr -> Contenido length: %d bytes\n", len(contentBytes))
 
 	// Abrir el archivo para escritura
 	file, err := os.OpenFile(path, os.O_RDWR, 0644)
@@ -237,7 +279,7 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 		// Si el bloque no existe, necesitamos asignar uno nuevo
 		if blockIndex == -1 {
 			// Buscar el siguiente bloque libre en el bitmap
-			blockIndex, err = findFreeBlockMkgrp(sb, file)
+			blockIndex, err = findFreeBlock(sb, file)
 			if err != nil {
 				return fmt.Errorf("error al buscar bloque libre: %w", err)
 			}
@@ -246,7 +288,7 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 			inode.I_block[i] = blockIndex
 
 			// Marcar el bloque como usado en el bitmap
-			err = updateBitmapBlockMkgrp(sb, file, blockIndex, true)
+			err = updateBitmapBlockMkusr(sb, file, blockIndex, true)
 			if err != nil {
 				return fmt.Errorf("error al actualizar bitmap: %w", err)
 			}
@@ -276,7 +318,7 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 
 		// Escribir el bloque en el disco
 		blockOffset := int64(sb.S_block_start + (blockIndex * sb.S_block_size))
-		fmt.Printf("DEBUG writeUsersFileMkgrp -> Escribiendo bloque %d en offset %d\n", blockIndex, blockOffset)
+		fmt.Printf("DEBUG writeUsersFileMkusr -> Escribiendo bloque %d en offset %d\n", blockIndex, blockOffset)
 
 		err := block.Serialize(path, blockOffset)
 		if err != nil {
@@ -288,7 +330,7 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 	for i := blocksNeeded; i < 12; i++ {
 		if inode.I_block[i] != -1 {
 			// Marcar el bloque como libre
-			err = updateBitmapBlockMkgrp(sb, file, inode.I_block[i], false)
+			err = updateBitmapBlockMkusr(sb, file, inode.I_block[i], false)
 			if err != nil {
 				return fmt.Errorf("error al liberar bloque: %w", err)
 			}
@@ -320,12 +362,12 @@ func writeUsersFileMkgrp(sb *structures.SuperBlock, partition *structures.Partit
 		return fmt.Errorf("error al actualizar superbloque: %w", err)
 	}
 
-	fmt.Println("DEBUG writeUsersFileMkgrp -> Escritura completada exitosamente")
+	fmt.Println("DEBUG writeUsersFileMkusr -> Escritura completada exitosamente")
 	return nil
 }
 
-// findFreeBlockMkgrp busca el primer bloque libre en el bitmap
-func findFreeBlockMkgrp(sb *structures.SuperBlock, file *os.File) (int32, error) {
+// findFreeBlock busca el primer bloque libre en el bitmap
+func findFreeBlock(sb *structures.SuperBlock, file *os.File) (int32, error) {
 	// Leer el bitmap de bloques
 	bitmapSize := sb.S_blocks_count
 	bitmap := make([]byte, bitmapSize)
@@ -350,8 +392,8 @@ func findFreeBlockMkgrp(sb *structures.SuperBlock, file *os.File) (int32, error)
 	return -1, errors.New("no hay bloques libres disponibles")
 }
 
-// updateBitmapBlockMkgrp actualiza el bitmap de bloques
-func updateBitmapBlockMkgrp(sb *structures.SuperBlock, file *os.File, blockIndex int32, used bool) error {
+// updateBitmapBlockMkusr actualiza el bitmap de bloques
+func updateBitmapBlockMkusr(sb *structures.SuperBlock, file *os.File, blockIndex int32, used bool) error {
 	// Posicionarse en el bitmap de bloques
 	bitmapOffset := int64(sb.S_bm_block_start + blockIndex)
 	_, err := file.Seek(bitmapOffset, 0)

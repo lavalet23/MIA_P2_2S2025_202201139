@@ -10,16 +10,21 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"ejecucion" | "login">("ejecucion");
+  const [activeTab, setActiveTab] = useState<
+    "ejecucion" | "login" | "explorador"
+  >("ejecucion");
 
-  // === Estados del login simulado ===
+  // === Estados del login ===
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
   const [loginId, setLoginId] = useState("");
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-  // === Funciones de la consola ===
+  // === Estado del explorador ===
+  const [filesystem, setFilesystem] = useState<any>({ disks: [] });
+
+  // === Funciones ===
   const handleClear = () => {
     setInput("");
     setOutput("");
@@ -45,6 +50,7 @@ export default function Home() {
       }
 
       setOutput(outputResult);
+      parseOutputToFilesystem(outputResult); // 🔄 Actualiza el explorador
     } catch (error) {
       setOutput(error instanceof Error ? error.message : "Error desconocido");
     } finally {
@@ -60,14 +66,20 @@ export default function Home() {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Credenciales correctas
-    const validUser = "root";
-    const validPass = "123";
-    const validId = "391A";
+    // Credenciales válidas
+    const validCredentials = [
+      { user: "root", pass: "123", id: "391A" },
+      { user: "user1", pass: "abc", id: "391A" },
+    ];
 
-    if (loginUser === validUser && loginPass === validPass && loginId === validId) {
+    const isValid = validCredentials.some(
+      (cred) =>
+        cred.user === loginUser && cred.pass === loginPass && cred.id === loginId
+    );
+
+    if (isValid) {
       setIsLoggedIn(true);
-      setLoginMessage("✅ Inicio de sesión exitoso. Bienvenido root.");
+      setLoginMessage(`✅ Inicio de sesión exitoso. Bienvenido ${loginUser}.`);
     } else {
       setIsLoggedIn(false);
       setLoginMessage("❌ Credenciales incorrectas. Inténtalo nuevamente.");
@@ -80,6 +92,74 @@ export default function Home() {
     setLoginPass("");
     setLoginId("");
     setLoginMessage("🔒 Sesión cerrada correctamente.");
+  };
+
+  // === Lógica del explorador ===
+  const parseOutputToFilesystem = (output: string) => {
+    const lines = output.split("\n");
+    const newFilesystem = { ...filesystem };
+
+    lines.forEach((line) => {
+      line = line.trim();
+
+      // Crear disco
+      if (line.startsWith("MKDISK: Disco creado exitosamente")) {
+        const pathLine = lines[lines.indexOf(line) + 1];
+        const sizeLine = lines[lines.indexOf(line) + 2];
+        const matchPath = pathLine?.match(/-> Path: (.*)/);
+        const matchSize = sizeLine?.match(/-> Tamaño: (.*)/);
+
+        if (matchPath && matchSize) {
+          const name = matchPath[1].split("/").pop();
+          // Evitar duplicados
+          if (!newFilesystem.disks.some((d: any) => d.path === matchPath[1])) {
+            newFilesystem.disks.push({
+              name,
+              path: matchPath[1],
+              size: matchSize[1],
+              partitions: [],
+            });
+          }
+        }
+      }
+
+      // Eliminar disco
+      if (line.startsWith("RMDISK: Disco eliminado correctamente")) {
+        const match = line.match(/-> Path: (.*)/);
+        if (match) {
+          const path = match[1];
+          newFilesystem.disks = newFilesystem.disks.filter(
+            (d: any) => d.path !== path
+          );
+        }
+      }
+
+      // Crear partición
+      if (line.startsWith("FDISK: Partición")) {
+        const nameMatch = line.match(/'(.+)'/);
+        const sizeLine = lines[lines.indexOf(line) + 1];
+        const matchSize = sizeLine?.match(/-> Tamaño: (.*)/);
+
+        if (nameMatch && matchSize) {
+          const partName = nameMatch[1];
+          const partSize = matchSize[1];
+
+          // Buscar el último disco modificado
+          const lastDisk = newFilesystem.disks[newFilesystem.disks.length - 1];
+          if (lastDisk) {
+            // Evitar duplicados
+            const exists = lastDisk.partitions.some(
+              (p: any) => p.name === partName
+            );
+            if (!exists) {
+              lastDisk.partitions.push({ name: partName, size: partSize });
+            }
+          }
+        }
+      }
+    });
+
+    setFilesystem(newFilesystem);
   };
 
   // === Render principal ===
@@ -103,6 +183,7 @@ export default function Home() {
             >
               🖥️ Ejecución
             </button>
+
             <button
               onClick={() => setActiveTab("login")}
               className={`px-4 py-2 rounded-lg font-medium ${
@@ -113,67 +194,46 @@ export default function Home() {
             >
               🔐 Login
             </button>
+
+            <button
+              onClick={() => setActiveTab("explorador")}
+              className={`px-4 py-2 rounded-lg font-medium ${
+                activeTab === "explorador"
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+              }`}
+            >
+              🗂️ Explorador
+            </button>
           </div>
         </div>
 
-        {/* === CONTENIDO DE PESTAÑAS === */}
-        {activeTab === "ejecucion" ? (
+        {/* === PESTAÑAS === */}
+        {activeTab === "ejecucion" && (
           <>
-            {/* === CONSOLA DE EJECUCIÓN === */}
             <div className="flex justify-end items-center mb-8 gap-4">
               <label
                 htmlFor="file-upload"
-                className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 
-                          transition-colors duration-200 cursor-pointer shadow-sm
-                          flex items-center gap-2"
+                className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors duration-200 cursor-pointer shadow-sm flex items-center gap-2"
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
-                  />
-                </svg>
-                Cargar Archivo
+                📂 Cargar Archivo
               </label>
 
               <button
                 onClick={handleClear}
-                className="px-4 py-2 rounded-lg bg-red-500 text-white 
-                hover:bg-red-600 transition-colors duration-200 
-                shadow-sm flex items-center gap-2"
+                className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors duration-200 shadow-sm flex items-center gap-2"
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                  />
-                </svg>
-                Limpiar
+                🧹 Limpiar
               </button>
 
               <button
                 onClick={handleExecute}
                 disabled={isLoading}
-                className={`px-4 py-2 rounded-lg bg-green-500 text-white 
-                hover:bg-green-600 transition-colors duration-200 
-                shadow-sm flex items-center gap-2
-                ${isLoading ? "opacity-50 cursor-not-allowed" : ""}`}
+                className={`px-4 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600 transition-colors duration-200 shadow-sm flex items-center gap-2 ${
+                  isLoading ? "opacity-50 cursor-not-allowed" : ""
+                }`}
               >
-                {isLoading ? "Ejecutando..." : "Ejecutar"}
+                {isLoading ? "⏳ Ejecutando..." : "▶️ Ejecutar"}
               </button>
             </div>
 
@@ -181,8 +241,9 @@ export default function Home() {
             <InputTerminal value={input} onChange={setInput} />
             <OutputTerminal output={output} />
           </>
-        ) : (
-          /* === LOGIN SIMULADO === */
+        )}
+
+        {activeTab === "login" && (
           <div className="flex flex-col items-center justify-center py-12">
             <h2 className="text-2xl font-semibold mb-6 text-gray-800 dark:text-white">
               {isLoggedIn ? "Sesión Activa" : "Iniciar Sesión"}
@@ -239,7 +300,7 @@ export default function Home() {
             ) : (
               <div className="flex flex-col items-center gap-4 bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                 <p className="text-green-600 font-semibold">
-                  ✅ Sesión iniciada correctamente como <b>root</b>.
+                  ✅ Sesión iniciada correctamente como <b>{loginUser}</b>.
                 </p>
                 <button
                   onClick={handleLogout}
@@ -247,10 +308,56 @@ export default function Home() {
                 >
                   Cerrar sesión
                 </button>
+              </div>
+            )}
+          </div>
+        )}
 
-                {loginMessage && (
-                  <p className="text-gray-600 mt-2">{loginMessage}</p>
-                )}
+        {activeTab === "explorador" && (
+          <div className="p-6 bg-white dark:bg-gray-800 rounded-lg shadow-md">
+            <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-white">
+              🗂️ Explorador de archivos
+            </h2>
+
+            <button
+              onClick={() => parseOutputToFilesystem(output)}
+              className="mb-4 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+            >
+              🔄 Actualizar
+            </button>
+
+            {filesystem.disks.length === 0 ? (
+              <p className="text-gray-500">Aún no hay discos creados.</p>
+            ) : (
+              <div className="space-y-4">
+                {filesystem.disks.map((disk: any, i: number) => (
+                  <div
+                    key={i}
+                    className="border rounded-lg p-3 bg-gray-50 dark:bg-gray-700"
+                  >
+                    <h3 className="font-bold text-gray-800 dark:text-white">
+                      📀 {disk.name}
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Ruta: {disk.path}
+                    </p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
+                      Tamaño: {disk.size}
+                    </p>
+
+                    {disk.partitions.length > 0 ? (
+                      <ul className="pl-6 list-disc text-gray-700 dark:text-gray-200">
+                        {disk.partitions.map((p: any, j: number) => (
+                          <li key={j}>
+                            🧩 {p.name} — {p.size}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-gray-500">Sin particiones.</p>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>

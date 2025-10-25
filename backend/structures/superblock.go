@@ -257,42 +257,80 @@ func (sb *SuperBlock) CreateFolder(path string, parentsDir []string, destDir str
 }
 
 func (sb *SuperBlock) CreateFile(path string, parentsDir []string, destFile string, size int, cont []string) error {
-	// Preparar el contenido del archivo
+	// 1) Preparar contenido
 	var content string
 	if len(cont) > 0 {
 		content = strings.Join(cont, "\n")
 	} else {
-		// Si no se proporciona contenido, generar contenido aleatorio o vacío
 		content = strings.Repeat("0", size)
 	}
 
-	// Si parentsDir está vacío, significa que se creará en el directorio raíz
+	// 2) Resolver el inodo padre recorriendo TODA la ruta (raíz -> ... -> último dir)
+	var parentInodeIndex int32
+	var err error
+
 	if len(parentsDir) == 0 {
-		return sb.createFileInInodeExt2(path, 0, parentsDir, destFile, size, content)
-	}
-
-	// Iterar sobre cada inodo para encontrar el directorio padre
-	for i := int32(0); i < sb.S_inodes_count; i++ {
-		// Deserializar el inodo actual
-		currentInode := &Inode{}
-		err := currentInode.Deserialize(path, int64(sb.S_inode_start+(i*sb.S_inode_size)))
+		// Sin padres: crear directamente en raíz (inodo 0)
+		parentInodeIndex = 0
+	} else {
+		parentInodeIndex, err = sb.resolveParentInode(path, parentsDir)
 		if err != nil {
-			continue
-		}
-
-		// Verificar si es un inodo de directorio
-		if currentInode.I_type[0] != '0' {
-			continue
-		}
-
-		// Verificar si este inodo corresponde al directorio padre
-		if sb.isParentDirectory(path, i, parentsDir) {
-			// Intentar crear el archivo en este inodo
-			return sb.createFileInInodeExt2(path, i, parentsDir, destFile, size, content)
+			return fmt.Errorf("directorio padre no encontrado: %v", err)
 		}
 	}
 
-	return fmt.Errorf("directorio padre no encontrado")
+	// 3) Crear el archivo en el inodo padre resuelto
+	if err := sb.createFileInInodeExt2(path, parentInodeIndex, parentsDir, destFile, size, content); err != nil {
+		return fmt.Errorf("error al crear el archivo: %v", err)
+	}
+	return nil
+}
+
+// resolveParentInode recorre la ruta padre desde la raíz y devuelve el índice de inodo del último directorio
+func (sb *SuperBlock) resolveParentInode(path string, parentsDir []string) (int32, error) {
+	current := int32(0) // empezar en raíz
+
+	for _, dirName := range parentsDir {
+		found := false
+
+		// Deserializar inodo actual
+		inode := &Inode{}
+		if err := inode.Deserialize(path, int64(sb.S_inode_start+(current*sb.S_inode_size))); err != nil {
+			return -1, err
+		}
+		// Debe ser directorio
+		if inode.I_type[0] != '0' {
+			return -1, fmt.Errorf("'%s' no es un directorio", dirName)
+		}
+
+		// Buscar el subdirectorio 'dirName' en sus bloques de carpeta
+		for _, blockIndex := range inode.I_block {
+			if blockIndex == -1 {
+				break
+			}
+			block := &FolderBlock{}
+			if err := block.Deserialize(path, int64(sb.S_block_start+(blockIndex*sb.S_block_size))); err != nil {
+				continue
+			}
+			for _, entry := range block.B_content {
+				name := strings.Trim(string(entry.B_name[:]), "\x00 ")
+				if strings.EqualFold(name, dirName) && entry.B_inodo != -1 {
+					current = entry.B_inodo
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+
+		if !found {
+			return -1, fmt.Errorf("no se encontró el directorio '%s'", dirName)
+		}
+	}
+
+	return current, nil
 }
 
 // Método auxiliar para verificar si un inodo es el directorio padre
